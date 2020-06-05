@@ -1,0 +1,223 @@
+---
+title: "Plato's Symposium Lexicon"
+author: "Adrian Woods"
+date: "6/4/2020"
+output: 
+    html_document:
+    code_folding: none
+    df_print: paged
+    highlight: tango
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE,
+    out.width = "100%",
+    out.height = "100%",
+    fig.pos = "center",
+    dpi = 300)
+```
+
+  
+  
+# 1.0 Setup 
+### 1.1 Load some libraries 
+```{r libraries}
+library(tidyverse)
+library(tidytext)
+library(rvest)     # HTML Hacking & Web Scraping
+library(furrr)     # Parallel Processing using purrr (iteration)
+library(fs)        # Working with File System
+library(xopen) 
+```
+
+
+### 1.2 Import the Symposium 
+```{r}
+symposium_words_list <- read_rds("platoSymposiumWordList.rds")
+
+
+```
+    
+# 2.0 Prepare Wordlist for WebSearch 
+
+####2.1 Research 
+ wiktionary.org has a simple url for catalogueing words. That makes it 
+ simple to add to my list of words from the Symposium. 
+
+### 2.2 Glue URl 
+Here is the count of total unique words in the symposium along with the count for each word. 
+```{r}
+
+symposium_words_list %>%
+    count(word, sort = TRUE)
+```
+
+This segment simply glues on the https to the front of each word.
+```{r}
+symposium_url_list <- symposium_words_list %>%
+    # filter distinct words
+    count(word, sort = TRUE) %>%
+    select(word) %>%
+    mutate(url = str_glue("https://en.wiktionary.org/wiki/{word}")) %>%
+    arrange(word) %>%
+    slice(-1:-4) %>%
+    arrange(desc(word))
+```
+### 2.3 Sample List 
+ I need a working list, and a non-working list in order to 
+ test out the function
+
+```{r}
+working_sample_url_list <- symposium_url_list %>%
+    slice(2, 4)
+
+nonworking_sample_url_list <- symposium_url_list %>%
+    slice(1:2)
+```
+# 3.0 Building Some Functions 
+### 3.1 Sample URL 
+ Saving this working url and nonworking for testing.
+```{r}
+url <- "https://en.wiktionary.org/wiki/ᾤχετο"
+url_broke <- "https://en.wiktionary.org/wiki/ᾠχόμην"
+        # followed by a quick opening of the url - It works.
+# xopen(url)
+# this will simply open the url.
+```
+### 3.2 Using chrome devleoper 
+ I work my way through the html to find 
+ the html tags that hold the english definitions.
+```{r}
+read_html(url) %>%
+    html_nodes("#mw-content-text") %>%
+    html_nodes("ol") %>%
+# map will pull out just the text from the tag. 
+    map(html_text) %>%
+    unlist() %>%
+# from experience I know there is some clean up that sometimes needs to happen
+# str_replace_all does the trick. 
+    str_replace_all("\n", " ")
+```
+### 3.3 Create Function 
+```{r}
+get_greek_definition <- function(url) {
+    wiktionary_definition <- read_html(url) %>%
+        html_nodes("#mw-content-text") %>%
+        html_nodes("ol") %>%
+        map(html_text) %>%
+        unlist() %>%
+        str_replace_all("\n", " ")
+ 
+    tibble(
+        definition = wiktionary_definition
+    ) 
+}
+```
+### 3.4 Test the function - IT Works! Progress
+```{r}
+get_greek_definition(url)
+```   
+### 3.5 Test function with my working sample list
+ this gives me my tibble with the greek word, a url, and a nest definition
+
+```{r}
+working_sample_url_list %>%
+    mutate(definition = map(url, get_greek_definition))
+```    
+### 3.6 Test function with nonworking samle url list
+
+```{r}
+#nonworking_sample_url_list %>%
+#    mutate(definition = map(url, get_greek_definition))
+
+# this will give you a HTTP error 404. The reason we get this break
+# is because the function breaks when it cannot find the requested html.
+# fortunately R, naturally, has a fix for that
+``` 
+# 4.0 Safely Test 
+### 4.1 Here is how safely works 
+```{r}
+safely(read_html, 'empty page')(url)
+```
+### 4.2 take that line of code and create a function to test my urls 
+```{r}
+test_my_urls <- function(url) {
+    safely(read_html, 'empty page')(url)
+}
+```
+### 4.3 Let's see how the function works. 
+```{r}
+working_sample_url_list %>%
+    mutate(definition = map(url, test_my_urls)) %>%
+    select(- url) %>%
+    unnest(cols = c(definition)) 
+
+# The non working list will leave an Empty Page variable. This will be easy to navigate.
+
+nonworking_sample_url_list %>%
+    mutate(definition = map(url, test_my_urls)) %>%
+    select(- url) %>%
+    unnest(cols = c(definition)) 
+```
+# 5.0 Create a list of working and non working url's 
+```{r}
+#working_symposium_url_list <- symposium_url_list %>%
+#    mutate(definition = map(url, test_my_urls))
+# that took 25 minutes - Watch out!
+# save this to an rds so we dont have to do that again.
+#working_symposium_url_list %>%
+#    write_rds("working_symposium_url_list.rds")
+# and load the result
+working_symposium_url_list <- read_rds("working_symposium_url_list.rds")
+```
+### 5.1 Filter out the non working url's 
+ this list doesn't have the actual URL's so I will need to add a column of TRUE statemnts
+ that way I can join with the original Symposium_url_list and then filter out the non working urls
+```{r}
+list_working_urls <- working_symposium_url_list %>%
+    select(- url) %>%
+    unnest(cols = c(definition)) %>%
+    #slice(1:20) %>%
+    filter(str_detect(definition, "pointer")) %>%
+    mutate(weblink_works = TRUE) %>%
+    select(word, weblink_works)
+    
+```    
+### 5.3 Join the two list and filter for just the working urls 
+```{r}
+final_list_of_working_urls <- symposium_url_list %>%
+    left_join(list_working_urls) %>%
+    filter(weblink_works == TRUE) %>%
+    select(word, url)
+``` 
+# 6.0 Ready to get Greek Definitions 
+```{r}
+# Here is where the magic happens, but I'm going to comment it out 
+# so that it knits faster. 
+
+#symposium_lexicon <- final_list_of_working_urls %>%
+#    mutate(definition = map(url, get_greek_definition))
+
+# load the results
+symposium_lexicon <- read_rds("symposium_lexicon.rds") 
+
+# Clean it up
+symposium_lexicon_clean <- symposium_lexicon %>% 
+    select(- url) %>%
+    unnest(cols = c(definition)) 
+
+symposium_lexicon_clean    
+```
+# 7.0 Save the Final Product     
+```{r}
+#symposium_lexicon_clean %>%
+#    write_rds("symposium_lexicon_wiktionary.rds")
+    
+```
